@@ -25,13 +25,16 @@ describe("extension manifest", () => {
     expect(manifest.main).toBe("./dist/extension.js");
   });
 
-  it("activates for the contributed connect command", () => {
+  it("registers the connect and Worker reconfiguration commands", () => {
     const commandIds = manifest.contributes?.commands?.map(({ command }) => command);
 
-    expect(commandIds).toContain("cloudflareBuilds.connect");
-    expect(manifest.activationEvents).toContain(
-      "onCommand:cloudflareBuilds.connect",
-    );
+    for (const command of [
+      "cloudflareBuilds.connect",
+      "cloudflareBuilds.selectWorker",
+    ]) {
+      expect(commandIds).toContain(command);
+      expect(manifest.activationEvents).toContain(`onCommand:${command}`);
+    }
   });
 
   it("contributes an actionable unconfigured welcome view", () => {
