@@ -4,9 +4,14 @@ import { CloudflareApiError } from "./apiError.js";
 const API_ROOT = "https://api.cloudflare.com/client/v4";
 const ACCOUNT_ID = /^[A-Za-z0-9_-]{1,64}$/u;
 const DEFAULT_TIMEOUT_MS = 10_000;
+const MAX_TIMEOUT_MS = 60_000;
 const DEFAULT_MAX_RESPONSE_BYTES = 1_048_576;
 const ACCOUNTS_PER_PAGE = 50;
 const MAX_ACCOUNT_PAGES = 20;
+const MAX_TEXT_LENGTH = 255;
+const MAX_ROOT_DIRECTORY_LENGTH = 1_024;
+const CONTROL_CHARACTER = /[\p{Cc}\p{Cf}]/u;
+const TRIGGER_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu;
 
 type Fetcher = (input: string, init: RequestInit) => Promise<Response>;
 
@@ -63,9 +68,16 @@ export class CloudflareClient {
 
     this.#token = token;
     this.#fetcher = options.fetcher ?? globalThis.fetch;
-    this.#maxResponseBytes =
-      options.maxResponseBytes ?? DEFAULT_MAX_RESPONSE_BYTES;
-    this.#timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+    this.#maxResponseBytes = validatePositiveInteger(
+      options.maxResponseBytes,
+      DEFAULT_MAX_RESPONSE_BYTES,
+      DEFAULT_MAX_RESPONSE_BYTES,
+    );
+    this.#timeoutMs = validatePositiveInteger(
+      options.timeoutMs,
+      DEFAULT_TIMEOUT_MS,
+      MAX_TIMEOUT_MS,
+    );
   }
 
   public async verifyToken(): Promise<TokenVerification> {
@@ -94,7 +106,10 @@ export class CloudflareClient {
       const envelope = await this.#requestEnvelope(
         `/accounts?page=${String(page)}&per_page=${String(ACCOUNTS_PER_PAGE)}&direction=asc`,
       );
-      if (!Array.isArray(envelope.result)) {
+      if (
+        !Array.isArray(envelope.result) ||
+        envelope.result.length > ACCOUNTS_PER_PAGE
+      ) {
         throw new CloudflareApiError("invalidResponse");
       }
 
@@ -154,6 +169,7 @@ export class CloudflareClient {
   }
 
   async #requestEnvelope(path: string): Promise<ApiEnvelope> {
+    const requestDeadline = Date.now() + this.#timeoutMs;
     let response: Response;
     try {
       response = await this.#fetcher(`${API_ROOT}${path}`, {
@@ -172,7 +188,11 @@ export class CloudflareClient {
       throw errorForStatus(response);
     }
 
-    const payload = await readBoundedJson(response, this.#maxResponseBytes);
+    const payload = await readBoundedJson(
+      response,
+      this.#maxResponseBytes,
+      Math.max(0, requestDeadline - Date.now()),
+    );
     if (!isRecord(payload)) {
       throw new CloudflareApiError("invalidResponse");
     }
@@ -198,6 +218,18 @@ function assertSafeIdentifier(value: string): void {
   if (!ACCOUNT_ID.test(value)) {
     throw new CloudflareApiError("invalidResponse");
   }
+}
+
+function validatePositiveInteger(
+  value: number | undefined,
+  defaultValue: number,
+  maximum: number,
+): number {
+  const result = value ?? defaultValue;
+  if (!Number.isSafeInteger(result) || result <= 0 || result > maximum) {
+    throw new CloudflareApiError("invalidResponse");
+  }
+  return result;
 }
 
 function errorForStatus(response: Response): CloudflareApiError {
@@ -231,8 +263,7 @@ function parseAccount(value: unknown): CloudflareAccount {
     !isRecord(value) ||
     typeof value.id !== "string" ||
     !ACCOUNT_ID.test(value.id) ||
-    typeof value.name !== "string" ||
-    value.name.trim().length === 0
+    !isSafeText(value.name, MAX_TEXT_LENGTH)
   ) {
     throw new CloudflareApiError("invalidResponse");
   }
@@ -242,9 +273,7 @@ function parseAccount(value: unknown): CloudflareAccount {
 function parseWorker(value: unknown): WorkerRef {
   if (
     !isRecord(value) ||
-    typeof value.id !== "string" ||
-    value.id.trim().length === 0 ||
-    value.id.length > 255 ||
+    !isSafeText(value.id, MAX_TEXT_LENGTH) ||
     typeof value.tag !== "string"
   ) {
     throw new CloudflareApiError("invalidResponse");
@@ -263,11 +292,11 @@ function parseTrigger(value: unknown, workerTag: string): BuildTrigger {
     typeof repository.provider_account_name !== "string" ||
     typeof repository.repo_name !== "string" ||
     typeof value.trigger_uuid !== "string" ||
-    typeof value.trigger_name !== "string"
+    !TRIGGER_ID.test(value.trigger_uuid) ||
+    !isSafeText(value.trigger_name, MAX_TEXT_LENGTH)
   ) {
     throw new CloudflareApiError("invalidResponse");
   }
-  assertSafeIdentifier(value.trigger_uuid);
 
   const identity = parseGitHubNameWithOwner(
     `${repository.provider_account_name}/${repository.repo_name}`,
@@ -278,10 +307,26 @@ function parseTrigger(value: unknown, workerTag: string): BuildTrigger {
 
   const branchIncludes = parseStringArray(value.branch_includes);
   const branchExcludes = parseStringArray(value.branch_excludes);
+  const deployCommand = value.deploy_command;
+  if (
+    deployCommand !== undefined &&
+    !isSafeText(deployCommand, MAX_ROOT_DIRECTORY_LENGTH)
+  ) {
+    throw new CloudflareApiError("invalidResponse");
+  }
   const preview =
     (branchIncludes.includes("*") && branchExcludes.length > 0) ||
-    (typeof value.deploy_command === "string" &&
-      value.deploy_command.includes("versions upload"));
+    (typeof deployCommand === "string" &&
+      /(?:^| )(?:npx )?wrangler(?:@[A-Za-z0-9._-]+)? versions upload(?: |$)/u.test(
+        deployCommand,
+      ));
+  const rootDirectory = value.root_directory;
+  if (
+    rootDirectory !== undefined &&
+    !isSafeText(rootDirectory, MAX_ROOT_DIRECTORY_LENGTH)
+  ) {
+    throw new CloudflareApiError("invalidResponse");
+  }
 
   return {
     branchExcludes,
@@ -290,10 +335,18 @@ function parseTrigger(value: unknown, workerTag: string): BuildTrigger {
     id: value.trigger_uuid,
     name: value.trigger_name,
     repositoryCanonicalName: identity.canonicalName,
-    rootDirectory:
-      typeof value.root_directory === "string" ? value.root_directory : "/",
+    rootDirectory: rootDirectory ?? "/",
     workerTag,
   };
+}
+
+function isSafeText(value: unknown, maximumLength: number): value is string {
+  return (
+    typeof value === "string" &&
+    value.trim().length > 0 &&
+    value.length <= maximumLength &&
+    !CONTROL_CHARACTER.test(value)
+  );
 }
 
 function parseStringArray(value: unknown): string[] {
@@ -304,11 +357,7 @@ function parseStringArray(value: unknown): string[] {
   const strings: string[] = [];
   for (const item of value as unknown[]) {
     if (
-      typeof item !== "string" ||
-      item.length > 255 ||
-      item.includes("\0") ||
-      item.includes("\n") ||
-      item.includes("\r")
+      !isSafeText(item, MAX_TEXT_LENGTH)
     ) {
       throw new CloudflareApiError("invalidResponse");
     }
@@ -337,6 +386,7 @@ function parseTotalCount(resultInfo: unknown): number | undefined {
 async function readBoundedJson(
   response: Response,
   maxBytes: number,
+  timeoutMs: number,
 ): Promise<unknown> {
   const contentLength = response.headers.get("content-length");
   if (
@@ -350,37 +400,83 @@ async function readBoundedJson(
     throw new CloudflareApiError("invalidResponse");
   }
 
-  const reader = response.body.getReader();
-  const chunks: Uint8Array[] = [];
-  let byteLength = 0;
-
   try {
-    for (;;) {
-      const result = await reader.read();
-      if (result.done) {
-        break;
+    const reader = response.body.getReader();
+    const chunks: Uint8Array[] = [];
+    let byteLength = 0;
+    const deadline = Date.now() + timeoutMs;
+
+    try {
+      for (;;) {
+        const result = await readBeforeDeadline(reader, deadline);
+        if (result.done) {
+          break;
+        }
+        byteLength += result.value.byteLength;
+        if (byteLength > maxBytes) {
+          void reader.cancel().catch(() => {
+            return undefined;
+          });
+          throw new CloudflareApiError("invalidResponse");
+        }
+        chunks.push(result.value);
       }
-      byteLength += result.value.byteLength;
-      if (byteLength > maxBytes) {
-        await reader.cancel();
-        throw new CloudflareApiError("invalidResponse");
-      }
-      chunks.push(result.value);
+    } finally {
+      reader.releaseLock();
     }
-  } finally {
-    reader.releaseLock();
-  }
 
-  const body = new Uint8Array(byteLength);
-  let offset = 0;
-  for (const chunk of chunks) {
-    body.set(chunk, offset);
-    offset += chunk.byteLength;
-  }
+    const body = new Uint8Array(byteLength);
+    let offset = 0;
+    for (const chunk of chunks) {
+      body.set(chunk, offset);
+      offset += chunk.byteLength;
+    }
 
-  try {
-    return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(body)) as unknown;
-  } catch {
+    try {
+      return JSON.parse(
+        new TextDecoder("utf-8", { fatal: true }).decode(body),
+      ) as unknown;
+    } catch {
+      throw new CloudflareApiError("invalidResponse");
+    }
+  } catch (error) {
+    if (error instanceof CloudflareApiError) {
+      throw error;
+    }
     throw new CloudflareApiError("invalidResponse");
+  }
+}
+
+async function readBeforeDeadline(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+  deadline: number,
+): Promise<ReadableStreamReadResult<Uint8Array>> {
+  const remainingMs = deadline - Date.now();
+  if (remainingMs <= 0) {
+    void reader.cancel().catch(() => {
+      return undefined;
+    });
+    throw new CloudflareApiError("invalidResponse");
+  }
+
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await new Promise<ReadableStreamReadResult<Uint8Array>>(
+      (resolve, reject) => {
+        timeout = setTimeout(() => {
+          reject(new CloudflareApiError("invalidResponse"));
+        }, remainingMs);
+        void reader.read().then(resolve, reject);
+      },
+    );
+  } catch (error) {
+    void reader.cancel().catch(() => {
+      return undefined;
+    });
+    throw error;
+  } finally {
+    if (timeout !== undefined) {
+      clearTimeout(timeout);
+    }
   }
 }
