@@ -30,6 +30,9 @@ describe("parseGitHubRemote", () => {
     "https://github.com/Cloudflare/workers-sdk/issues",
     "https://github.com/Cloudflare/%2e%2e.git",
     "git@github.com:Cloudflare/workers-sdk.git\n--upload-pack=evil",
+    "https://github.com/Cloudflare/workers-sdk.git\u000b",
+    "https://github.com/Cloudflare/workers-sdk.git\u0085",
+    "https://github.com/Cloudflare/workers-sdk.git\uFEFF",
     "file:///private/repository",
     "",
   ])("rejects an unsafe or unsupported remote: %s", (remote) => {
@@ -44,7 +47,15 @@ describe("parseGitHubNameWithOwner", () => {
     );
   });
 
-  it.each(["owner", "owner/repo/extra", "../repo", "owner/.."])(
+  it.each([
+    "owner",
+    "owner/repo/extra",
+    "../repo",
+    "owner/..",
+    "Cloudflare/workers-sdk\u000b",
+    "Cloudflare/workers-sdk\u0085",
+    "Cloudflare/workers-sdk\uFEFF",
+  ])(
     "rejects malformed identity: %s",
     (identity) => {
       expect(parseGitHubNameWithOwner(identity)).toBeUndefined();

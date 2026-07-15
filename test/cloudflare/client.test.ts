@@ -241,6 +241,130 @@ describe("CloudflareClient", () => {
     ).rejects.toMatchObject({ kind: "invalidResponse" });
   });
 
+  it("rejects trigger path injection before making a request", async () => {
+    const fetcher = vi.fn<MockFetcher>(respondWith(success([])));
+
+    await expect(
+      new CloudflareClient(TOKEN, { fetcher }).listTriggers(
+        ACCOUNT_ID,
+        "worker/../../user/tokens/verify",
+      ),
+    ).rejects.toMatchObject({ kind: "invalidResponse" });
+    expect(fetcher).not.toHaveBeenCalled();
+  });
+
+  it("rejects account pages larger than the requested page size", async () => {
+    const tooManyAccounts = Array.from({ length: 51 }, (_, index) => ({
+      id: index.toString(16).padStart(32, "0"),
+      name: `Account ${String(index)}`,
+    }));
+
+    await expect(
+      new CloudflareClient(TOKEN, {
+        fetcher: respondWith(success(tooManyAccounts)),
+      }).listAccounts(),
+    ).rejects.toMatchObject({ kind: "invalidResponse" });
+  });
+
+  it("rejects control characters in trigger text returned for display", async () => {
+    const fetcher = vi.fn<MockFetcher>(
+      respondWith(
+        success([
+          {
+            branch_excludes: [],
+            branch_includes: ["main"],
+            repo_connection: {
+              provider_account_name: "Cloudflare",
+              provider_type: "github",
+              repo_name: "workers-sdk",
+            },
+            root_directory: "/apps/api",
+            trigger_name: "Production\u001b[2J",
+            trigger_uuid: "11111111-1111-1111-1111-111111111111",
+          },
+        ]),
+      ),
+    );
+
+    await expect(
+      new CloudflareClient(TOKEN, { fetcher }).listTriggers(
+        ACCOUNT_ID,
+        "a".repeat(32),
+      ),
+    ).rejects.toMatchObject({ kind: "invalidResponse" });
+  });
+
+  it("does not classify arbitrary deploy-command text as a preview trigger", async () => {
+    const fetcher = vi.fn<MockFetcher>(
+      respondWith(
+        success([
+          {
+            branch_excludes: [],
+            branch_includes: ["main"],
+            deploy_command: "echo versions upload",
+            repo_connection: {
+              provider_account_name: "Cloudflare",
+              provider_type: "github",
+              repo_name: "workers-sdk",
+            },
+            root_directory: "/apps/api",
+            trigger_name: "Production",
+            trigger_uuid: "11111111-1111-1111-1111-111111111111",
+          },
+        ]),
+      ),
+    );
+
+    await expect(
+      new CloudflareClient(TOKEN, { fetcher }).listTriggers(
+        ACCOUNT_ID,
+        "a".repeat(32),
+      ),
+    ).resolves.toMatchObject([{ environment: "production" }]);
+  });
+
+  it("keeps response-stream failures from exposing error details", async () => {
+    const response = new Response(
+      new ReadableStream<Uint8Array>({
+        start(controller): void {
+          controller.error(new Error(`stream failure with ${TOKEN}`));
+        },
+      }),
+    );
+    const failure = new CloudflareClient(TOKEN, {
+      fetcher: respondWith(response),
+    }).verifyToken();
+
+    await expect(failure).rejects.toMatchObject({ kind: "invalidResponse" });
+    await expect(failure).rejects.not.toThrow(TOKEN);
+  });
+
+  it("applies the request timeout while reading a stalled response body", async () => {
+    const response = new Response(
+      new ReadableStream<Uint8Array>({
+        start(): void {
+          // Keep the body open without producing a chunk.
+        },
+      }),
+    );
+
+    await expect(
+      new CloudflareClient(TOKEN, {
+        fetcher: respondWith(response),
+        timeoutMs: 10,
+      }).verifyToken(),
+    ).rejects.toMatchObject({ kind: "invalidResponse" });
+  });
+
+  it("rejects unbounded response and timeout overrides", () => {
+    expect(
+      () => new CloudflareClient(TOKEN, { maxResponseBytes: Infinity }),
+    ).toThrow("Cloudflare returned an invalid response.");
+    expect(() => new CloudflareClient(TOKEN, { timeoutMs: 60_001 })).toThrow(
+      "Cloudflare returned an invalid response.",
+    );
+  });
+
   it("turns fetch failures into safe network errors", async () => {
     const fetcher = vi.fn<MockFetcher>(() =>
       Promise.reject(new Error(`Network failure with ${TOKEN}`)),

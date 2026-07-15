@@ -1,6 +1,8 @@
 const GITHUB_HOST = "github.com";
 const OWNER = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/u;
 const REPOSITORY = /^[A-Za-z0-9_.-]{1,100}$/u;
+const CONTROL_CHARACTER = /[\p{Cc}\p{Cf}]/u;
+const MAX_IDENTITY_INPUT_LENGTH = 256;
 
 export interface GitHubRepositoryIdentity {
   readonly canonicalName: string;
@@ -12,8 +14,14 @@ export interface GitHubRepositoryIdentity {
 export function parseGitHubRemote(
   remote: string,
 ): GitHubRepositoryIdentity | undefined {
+  if (
+    remote.length > MAX_IDENTITY_INPUT_LENGTH ||
+    CONTROL_CHARACTER.test(remote)
+  ) {
+    return undefined;
+  }
   const value = remote.trim();
-  if (value.length === 0 || value.includes("\n") || value.includes("\r")) {
+  if (value.length === 0) {
     return undefined;
   }
 
@@ -53,6 +61,12 @@ export function parseGitHubRemote(
 export function parseGitHubNameWithOwner(
   value: string,
 ): GitHubRepositoryIdentity | undefined {
+  if (
+    value.length > MAX_IDENTITY_INPUT_LENGTH ||
+    CONTROL_CHARACTER.test(value)
+  ) {
+    return undefined;
+  }
   const parts = value.trim().split("/");
   return parts.length === 2 ? identityFromParts(parts[0], parts[1]) : undefined;
 }
