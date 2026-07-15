@@ -175,6 +175,122 @@ describe("CloudflareClient", () => {
     );
   });
 
+  it("lists bounded recent builds and omits build token and environment data", async () => {
+    const workerTag = "a".repeat(32);
+    const fetcher = vi.fn<MockFetcher>(
+      respondWith(
+        success([
+          {
+            build_outcome: "success",
+            build_trigger_metadata: {
+              branch: "feature/builds",
+              build_token_name: "must-not-leave-parser",
+              build_token_uuid: "11111111-1111-1111-1111-111111111111",
+              build_trigger_source: "push",
+              commit_hash: "b".repeat(40),
+              commit_message: "Add build retrieval",
+              environment_variables: { PRIVATE_BUILD_VALUE: "not-exposed" },
+            },
+            build_uuid: "22222222-2222-2222-2222-222222222222",
+            created_on: "2026-01-02T03:04:05Z",
+            initializing_on: "2026-01-02T03:04:06Z",
+            modified_on: "2026-01-02T03:05:05Z",
+            running_on: "2026-01-02T03:04:07Z",
+            status: "stopped",
+            stopped_on: "2026-01-02T03:05:04Z",
+            trigger: {
+              branch_excludes: ["main"],
+              branch_includes: ["*"],
+              deploy_command: "npx wrangler versions upload",
+              external_script_id: workerTag,
+              repo_connection: {
+                provider_account_name: "Cloudflare",
+                provider_type: "github",
+                repo_name: "workers-sdk",
+              },
+              root_directory: "/apps/api",
+              trigger_name: "Preview",
+              trigger_uuid: "33333333-3333-3333-3333-333333333333",
+            },
+          },
+        ]),
+      ),
+    );
+
+    await expect(
+      new CloudflareClient(TOKEN, { fetcher }).listBuilds(ACCOUNT_ID, workerTag, 2),
+    ).resolves.toEqual([
+      {
+        branch: "feature/builds",
+        commitHash: "b".repeat(40),
+        commitMessage: "Add build retrieval",
+        createdOn: "2026-01-02T03:04:05Z",
+        environment: "preview",
+        initializingOn: "2026-01-02T03:04:06Z",
+        modifiedOn: "2026-01-02T03:05:05Z",
+        outcome: "success",
+        runningOn: "2026-01-02T03:04:07Z",
+        status: "stopped",
+        stoppedOn: "2026-01-02T03:05:04Z",
+        triggerSource: "push",
+        uuid: "22222222-2222-2222-2222-222222222222",
+      },
+    ]);
+    expect(fetcher.mock.calls[0]?.[0]).toBe(
+      `https://api.cloudflare.com/client/v4/accounts/${ACCOUNT_ID}/builds/workers/${workerTag}/builds?page=1&per_page=2`,
+    );
+  });
+
+  it("gets one build with an independent lifecycle status and outcome", async () => {
+    const buildUuid = "44444444-4444-4444-4444-444444444444";
+    const fetcher = vi.fn<MockFetcher>(
+      respondWith(
+        success({
+          build_trigger_metadata: {
+            branch: "main",
+            build_trigger_source: "api",
+            commit_hash: "c".repeat(64),
+            commit_message: "Deploy the release",
+          },
+          build_uuid: buildUuid,
+          created_on: "2026-02-03T04:05:06+00:00",
+          modified_on: "2026-02-03T04:05:06+00:00",
+          status: "running",
+          trigger: {
+            branch_excludes: [],
+            branch_includes: ["main"],
+            external_script_id: "d".repeat(32),
+            repo_connection: {
+              provider_account_name: "Cloudflare",
+              provider_type: "github",
+              repo_name: "workers-sdk",
+            },
+            root_directory: "/apps/api",
+            trigger_name: "Production",
+            trigger_uuid: "55555555-5555-5555-5555-555555555555",
+          },
+        }),
+      ),
+    );
+
+    await expect(
+      new CloudflareClient(TOKEN, { fetcher }).getBuild(ACCOUNT_ID, buildUuid),
+    ).resolves.toEqual({
+      branch: "main",
+      commitHash: "c".repeat(64),
+      commitMessage: "Deploy the release",
+      createdOn: "2026-02-03T04:05:06+00:00",
+      environment: "production",
+      modifiedOn: "2026-02-03T04:05:06+00:00",
+      status: "running",
+      triggerSource: "api",
+      uuid: buildUuid,
+    });
+    expect(fetcher.mock.calls[0]?.[0]).toBe(
+      `https://api.cloudflare.com/client/v4/accounts/${ACCOUNT_ID}/builds/builds/${buildUuid}`,
+    );
+  });
+
   it("rejects an unsafe account ID before making a request", async () => {
     const fetcher = vi.fn<MockFetcher>(respondWith(success({})));
     const client = new CloudflareClient(TOKEN, { fetcher });

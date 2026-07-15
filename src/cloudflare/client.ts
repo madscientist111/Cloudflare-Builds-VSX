@@ -2,16 +2,22 @@ import { parseGitHubNameWithOwner } from "../git/repositoryIdentity.js";
 import { CloudflareApiError } from "./apiError.js";
 
 const API_ROOT = "https://api.cloudflare.com/client/v4";
-const ACCOUNT_ID = /^[A-Za-z0-9_-]{1,64}$/u;
+const ACCOUNT_ID = /^[0-9a-f]{32}$/iu;
+const WORKER_TAG = /^[0-9a-f]{32}$/iu;
 const DEFAULT_TIMEOUT_MS = 10_000;
 const MAX_TIMEOUT_MS = 60_000;
 const DEFAULT_MAX_RESPONSE_BYTES = 1_048_576;
 const ACCOUNTS_PER_PAGE = 50;
 const MAX_ACCOUNT_PAGES = 20;
+const DEFAULT_BUILD_LIMIT = 20;
+const MAX_BUILD_LIMIT = 50;
 const MAX_TEXT_LENGTH = 255;
+const MAX_COMMIT_MESSAGE_LENGTH = 1_024;
 const MAX_ROOT_DIRECTORY_LENGTH = 1_024;
 const CONTROL_CHARACTER = /[\p{Cc}\p{Cf}]/u;
-const TRIGGER_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu;
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu;
+const COMMIT_SHA = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/iu;
+const RFC3339_TIMESTAMP = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d{1,9})?(?:Z|[+-]\d{2}:\d{2})$/u;
 
 type Fetcher = (input: string, init: RequestInit) => Promise<Response>;
 
@@ -53,6 +59,37 @@ export interface BuildTrigger {
   readonly repositoryCanonicalName: string;
   readonly rootDirectory: string;
   readonly workerTag: string;
+}
+
+export type BuildLifecycleStatus =
+  | "queued"
+  | "initializing"
+  | "running"
+  | "stopped";
+
+export type BuildOutcome =
+  | "success"
+  | "fail"
+  | "skipped"
+  | "cancelled"
+  | "terminated";
+
+export type BuildTriggerSource = "push" | "pull_request" | "manual" | "api";
+
+export interface CloudflareBuild {
+  readonly branch: string;
+  readonly commitHash: string;
+  readonly commitMessage: string;
+  readonly createdOn: string;
+  readonly environment: "preview" | "production";
+  readonly initializingOn?: string;
+  readonly modifiedOn: string;
+  readonly outcome?: BuildOutcome;
+  readonly runningOn?: string;
+  readonly status: BuildLifecycleStatus;
+  readonly stoppedOn?: string;
+  readonly triggerSource: BuildTriggerSource;
+  readonly uuid: string;
 }
 
 export class CloudflareClient {
@@ -150,7 +187,7 @@ export class CloudflareClient {
     workerTag: string,
   ): Promise<BuildTrigger[]> {
     assertAccountId(accountId);
-    assertSafeIdentifier(workerTag);
+    assertWorkerTag(workerTag);
     const result = await this.#request(
       `/accounts/${accountId}/builds/workers/${workerTag}/triggers`,
     );
@@ -158,6 +195,31 @@ export class CloudflareClient {
       throw new CloudflareApiError("invalidResponse");
     }
     return result.map((value) => parseTrigger(value, workerTag));
+  }
+
+  public async listBuilds(
+    accountId: string,
+    workerTag: string,
+    limit = DEFAULT_BUILD_LIMIT,
+  ): Promise<CloudflareBuild[]> {
+    assertAccountId(accountId);
+    assertWorkerTag(workerTag);
+    const perPage = validatePositiveInteger(limit, DEFAULT_BUILD_LIMIT, MAX_BUILD_LIMIT);
+    const result = await this.#request(
+      `/accounts/${accountId}/builds/workers/${workerTag}/builds?page=1&per_page=${String(perPage)}`,
+    );
+    if (!Array.isArray(result) || result.length > perPage) {
+      throw new CloudflareApiError("invalidResponse");
+    }
+    return result.map(parseBuild);
+  }
+
+  public async getBuild(accountId: string, buildUuid: string): Promise<CloudflareBuild> {
+    assertAccountId(accountId);
+    assertUuid(buildUuid);
+    return parseBuild(
+      await this.#request(`/accounts/${accountId}/builds/builds/${buildUuid}`),
+    );
   }
 
   async #request(path: string): Promise<unknown> {
@@ -214,8 +276,14 @@ function assertAccountId(accountId: string): void {
   }
 }
 
-function assertSafeIdentifier(value: string): void {
-  if (!ACCOUNT_ID.test(value)) {
+function assertWorkerTag(workerTag: string): void {
+  if (!WORKER_TAG.test(workerTag)) {
+    throw new CloudflareApiError("invalidResponse");
+  }
+}
+
+function assertUuid(value: string): void {
+  if (!UUID.test(value)) {
     throw new CloudflareApiError("invalidResponse");
   }
 }
@@ -278,7 +346,7 @@ function parseWorker(value: unknown): WorkerRef {
   ) {
     throw new CloudflareApiError("invalidResponse");
   }
-  assertSafeIdentifier(value.tag);
+  assertWorkerTag(value.tag);
   return { name: value.id, tag: value.tag };
 }
 
@@ -292,7 +360,7 @@ function parseTrigger(value: unknown, workerTag: string): BuildTrigger {
     typeof repository.provider_account_name !== "string" ||
     typeof repository.repo_name !== "string" ||
     typeof value.trigger_uuid !== "string" ||
-    !TRIGGER_ID.test(value.trigger_uuid) ||
+    !UUID.test(value.trigger_uuid) ||
     !isSafeText(value.trigger_name, MAX_TEXT_LENGTH)
   ) {
     throw new CloudflareApiError("invalidResponse");
@@ -338,6 +406,147 @@ function parseTrigger(value: unknown, workerTag: string): BuildTrigger {
     rootDirectory: rootDirectory ?? "/",
     workerTag,
   };
+}
+
+function parseBuild(value: unknown): CloudflareBuild {
+  if (!isRecord(value) || !isRecord(value.build_trigger_metadata)) {
+    throw new CloudflareApiError("invalidResponse");
+  }
+
+  const metadata = value.build_trigger_metadata;
+  if (
+    typeof value.build_uuid !== "string" ||
+    !UUID.test(value.build_uuid) ||
+    !isSafeText(metadata.branch, MAX_TEXT_LENGTH) ||
+    typeof metadata.commit_hash !== "string" ||
+    !COMMIT_SHA.test(metadata.commit_hash) ||
+    !isSafeText(metadata.commit_message, MAX_COMMIT_MESSAGE_LENGTH)
+  ) {
+    throw new CloudflareApiError("invalidResponse");
+  }
+
+  return {
+    branch: metadata.branch,
+    commitHash: metadata.commit_hash,
+    commitMessage: metadata.commit_message,
+    createdOn: parseRequiredTimestamp(value.created_on),
+    environment: parseBuildEnvironment(value.trigger),
+    ...optionalTimestamp("initializingOn", value.initializing_on),
+    modifiedOn: parseRequiredTimestamp(value.modified_on),
+    ...optionalOutcome(value.build_outcome),
+    ...optionalTimestamp("runningOn", value.running_on),
+    status: parseLifecycleStatus(value.status),
+    ...optionalTimestamp("stoppedOn", value.stopped_on),
+    triggerSource: parseTriggerSource(metadata.build_trigger_source),
+    uuid: value.build_uuid,
+  };
+}
+
+function parseBuildEnvironment(value: unknown): "preview" | "production" {
+  if (
+    !isRecord(value) ||
+    typeof value.external_script_id !== "string" ||
+    !WORKER_TAG.test(value.external_script_id)
+  ) {
+    throw new CloudflareApiError("invalidResponse");
+  }
+  return parseTrigger(value, value.external_script_id).environment;
+}
+
+function parseLifecycleStatus(value: unknown): BuildLifecycleStatus {
+  if (
+    value !== "queued" &&
+    value !== "initializing" &&
+    value !== "running" &&
+    value !== "stopped"
+  ) {
+    throw new CloudflareApiError("invalidResponse");
+  }
+  return value;
+}
+
+function optionalOutcome(value: unknown): { readonly outcome?: BuildOutcome } {
+  if (value === undefined) {
+    return {};
+  }
+  if (
+    value !== "success" &&
+    value !== "fail" &&
+    value !== "skipped" &&
+    value !== "cancelled" &&
+    value !== "terminated"
+  ) {
+    throw new CloudflareApiError("invalidResponse");
+  }
+  return { outcome: value };
+}
+
+function parseTriggerSource(value: unknown): BuildTriggerSource {
+  if (
+    value !== "push" &&
+    value !== "pull_request" &&
+    value !== "manual" &&
+    value !== "api"
+  ) {
+    throw new CloudflareApiError("invalidResponse");
+  }
+  return value;
+}
+
+function parseRequiredTimestamp(value: unknown): string {
+  if (!isRfc3339Timestamp(value)) {
+    throw new CloudflareApiError("invalidResponse");
+  }
+  return value;
+}
+
+function optionalTimestamp(
+  name: "initializingOn" | "runningOn" | "stoppedOn",
+  value: unknown,
+): { readonly [key in typeof name]?: string } {
+  if (value === undefined) {
+    return {};
+  }
+  if (!isRfc3339Timestamp(value)) {
+    throw new CloudflareApiError("invalidResponse");
+  }
+  return { [name]: value };
+}
+
+function isRfc3339Timestamp(value: unknown): value is string {
+  if (typeof value !== "string" || value.length > 64) {
+    return false;
+  }
+  const match = RFC3339_TIMESTAMP.exec(value);
+  if (match === null) {
+    return false;
+  }
+  const [, year, month, day, hour, minute, second] = match;
+  if (
+    year === undefined ||
+    month === undefined ||
+    day === undefined ||
+    hour === undefined ||
+    minute === undefined ||
+    second === undefined
+  ) {
+    return false;
+  }
+  const numericYear = Number(year);
+  const numericMonth = Number(month);
+  const numericDay = Number(day);
+  const offset = value.endsWith("Z") ? undefined : value.slice(-6);
+  return (
+    numericMonth >= 1 &&
+    numericMonth <= 12 &&
+    numericDay >= 1 &&
+    numericDay <= new Date(Date.UTC(numericYear, numericMonth, 0)).getUTCDate() &&
+    Number(hour) <= 23 &&
+    Number(minute) <= 59 &&
+    Number(second) <= 59 &&
+    (offset === undefined ||
+      (Number(offset.slice(1, 3)) <= 23 && Number(offset.slice(4, 6)) <= 59))
+  );
 }
 
 function isSafeText(value: unknown, maximumLength: number): value is string {
