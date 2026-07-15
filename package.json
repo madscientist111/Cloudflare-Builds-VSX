@@ -1,0 +1,54 @@
+{
+  "name": "cloudflare-builds",
+  "displayName": "Cloudflare Builds",
+  "description": "Monitor Cloudflare Workers Builds from your editor.",
+  "version": "0.0.1",
+  "publisher": "madscientist111",
+  "license": "UNLICENSED",
+  "private": true,
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/madscientist111/Cloudflare-Builds-VSX.git"
+  },
+  "engines": {
+    "vscode": "^1.95.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "keywords": [
+    "cloudflare",
+    "workers",
+    "builds",
+    "deployments"
+  ],
+  "main": "./dist/extension.js",
+  "activationEvents": [
+    "onView:cloudflareBuilds.view",
+    "onCommand:cloudflareBuilds.connect"
+  ],
+  "scripts": {
+    "build": "node esbuild.mjs --production",
+    "check": "npm run lint && npm run typecheck && npm test && npm run build",
+    "compile": "node esbuild.mjs",
+    "lint": "eslint .",
+    "package": "npm run check && npm run test:extension && vsce package --no-dependencies",
+    "test": "vitest run",
+    "test:extension": "npm run build && node scripts/run-extension-tests.mjs",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit",
+    "watch": "node esbuild.mjs --watch"
+  },
+  "devDependencies": {
+    "@eslint/js": "9.39.1",
+    "@types/node": "22.19.1",
+    "@types/vscode": "1.95.0",
+    "@vscode/test-electron": "2.5.2",
+    "@vscode/vsce": "3.9.2",
+    "esbuild": "0.28.1",
+    "eslint": "9.39.1",
+    "typescript": "5.9.3",
+    "typescript-eslint": "8.52.0",
+    "vitest": "4.1.10"
+  }
+}
