@@ -26,7 +26,8 @@
   "activationEvents": [
     "onView:cloudflareBuilds.view",
     "onCommand:cloudflareBuilds.connect",
-    "onCommand:cloudflareBuilds.disconnect"
+    "onCommand:cloudflareBuilds.disconnect",
+    "onCommand:cloudflareBuilds.selectWorker"
   ],
   "contributes": {
     "commands": [
@@ -40,6 +41,12 @@
         "title": "Disconnect",
         "category": "Cloudflare Builds",
         "icon": "$(debug-disconnect)"
+      },
+      {
+        "command": "cloudflareBuilds.selectWorker",
+        "title": "Select Worker",
+        "category": "Cloudflare Builds",
+        "icon": "$(symbol-function)"
       }
     ],
     "viewsContainers": {
@@ -67,6 +74,11 @@
     ],
     "menus": {
       "view/title": [
+        {
+          "command": "cloudflareBuilds.selectWorker",
+          "when": "view == cloudflareBuilds.view && cloudflareBuilds.connected",
+          "group": "navigation"
+        },
         {
           "command": "cloudflareBuilds.disconnect",
           "when": "view == cloudflareBuilds.view && cloudflareBuilds.connected",

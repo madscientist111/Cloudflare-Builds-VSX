@@ -5,6 +5,7 @@ const EXTENSION_ID = "madscientist111.cloudflare-builds";
 const CONNECTION_COMMANDS = [
   "cloudflareBuilds.connect",
   "cloudflareBuilds.disconnect",
+  "cloudflareBuilds.selectWorker",
 ] as const;
 
 export async function run(): Promise<void> {
