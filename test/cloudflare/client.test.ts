@@ -105,6 +105,76 @@ describe("CloudflareClient", () => {
     ]);
   });
 
+  it("lists Workers by immutable tag", async () => {
+    const fetcher = vi.fn<MockFetcher>(
+      respondWith(
+        success([
+          { id: "api-worker", tag: "a".repeat(32) },
+          { id: "web-worker", tag: "b".repeat(32) },
+        ]),
+      ),
+    );
+
+    await expect(
+      new CloudflareClient(TOKEN, { fetcher }).listWorkers(ACCOUNT_ID),
+    ).resolves.toEqual([
+      { name: "api-worker", tag: "a".repeat(32) },
+      { name: "web-worker", tag: "b".repeat(32) },
+    ]);
+  });
+
+  it("parses production and preview GitHub triggers", async () => {
+    const workerTag = "a".repeat(32);
+    const repository = {
+      provider_account_name: "Cloudflare",
+      provider_type: "github",
+      repo_name: "workers-sdk",
+    };
+    const fetcher = vi.fn<MockFetcher>(
+      respondWith(
+        success([
+          {
+            branch_excludes: [],
+            branch_includes: ["main"],
+            deploy_command: "npx wrangler deploy",
+            repo_connection: repository,
+            root_directory: "/apps/api",
+            trigger_name: "Production",
+            trigger_uuid: "11111111-1111-1111-1111-111111111111",
+          },
+          {
+            branch_excludes: ["main"],
+            branch_includes: ["*"],
+            deploy_command: "npx wrangler versions upload",
+            repo_connection: repository,
+            root_directory: "/apps/api",
+            trigger_name: "Preview",
+            trigger_uuid: "22222222-2222-2222-2222-222222222222",
+          },
+        ]),
+      ),
+    );
+
+    const triggers = await new CloudflareClient(TOKEN, { fetcher }).listTriggers(
+      ACCOUNT_ID,
+      workerTag,
+    );
+
+    expect(triggers).toMatchObject([
+      {
+        environment: "production",
+        repositoryCanonicalName: "cloudflare/workers-sdk",
+      },
+      {
+        environment: "preview",
+        repositoryCanonicalName: "cloudflare/workers-sdk",
+      },
+    ]);
+    expect(fetcher.mock.calls[0]?.[0]).toContain(
+      `/builds/workers/${workerTag}/triggers`,
+    );
+  });
+
   it("rejects an unsafe account ID before making a request", async () => {
     const fetcher = vi.fn<MockFetcher>(respondWith(success({})));
     const client = new CloudflareClient(TOKEN, { fetcher });

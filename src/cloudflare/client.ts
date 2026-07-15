@@ -1,3 +1,4 @@
+import { parseGitHubNameWithOwner } from "../git/repositoryIdentity.js";
 import { CloudflareApiError } from "./apiError.js";
 
 const API_ROOT = "https://api.cloudflare.com/client/v4";
@@ -31,6 +32,22 @@ export interface TokenVerification {
   readonly expiresOn?: string;
   readonly id: string;
   readonly status: "active" | "disabled" | "expired";
+}
+
+export interface WorkerRef {
+  readonly name: string;
+  readonly tag: string;
+}
+
+export interface BuildTrigger {
+  readonly branchExcludes: readonly string[];
+  readonly branchIncludes: readonly string[];
+  readonly environment: "preview" | "production";
+  readonly id: string;
+  readonly name: string;
+  readonly repositoryCanonicalName: string;
+  readonly rootDirectory: string;
+  readonly workerTag: string;
 }
 
 export class CloudflareClient {
@@ -104,6 +121,30 @@ export class CloudflareClient {
     await this.#request(`/accounts/${accountId}/builds/account/limits`);
   }
 
+  public async listWorkers(accountId: string): Promise<WorkerRef[]> {
+    assertAccountId(accountId);
+    const result = await this.#request(`/accounts/${accountId}/workers/scripts`);
+    if (!Array.isArray(result)) {
+      throw new CloudflareApiError("invalidResponse");
+    }
+    return result.map(parseWorker);
+  }
+
+  public async listTriggers(
+    accountId: string,
+    workerTag: string,
+  ): Promise<BuildTrigger[]> {
+    assertAccountId(accountId);
+    assertSafeIdentifier(workerTag);
+    const result = await this.#request(
+      `/accounts/${accountId}/builds/workers/${workerTag}/triggers`,
+    );
+    if (!Array.isArray(result) || result.length > 2) {
+      throw new CloudflareApiError("invalidResponse");
+    }
+    return result.map((value) => parseTrigger(value, workerTag));
+  }
+
   async #request(path: string): Promise<unknown> {
     const envelope = await this.#requestEnvelope(path);
     if (!("result" in envelope)) {
@@ -153,6 +194,12 @@ function assertAccountId(accountId: string): void {
   }
 }
 
+function assertSafeIdentifier(value: string): void {
+  if (!ACCOUNT_ID.test(value)) {
+    throw new CloudflareApiError("invalidResponse");
+  }
+}
+
 function errorForStatus(response: Response): CloudflareApiError {
   if (response.status === 401) {
     return new CloudflareApiError("authentication");
@@ -190,6 +237,84 @@ function parseAccount(value: unknown): CloudflareAccount {
     throw new CloudflareApiError("invalidResponse");
   }
   return { id: value.id, name: value.name };
+}
+
+function parseWorker(value: unknown): WorkerRef {
+  if (
+    !isRecord(value) ||
+    typeof value.id !== "string" ||
+    value.id.trim().length === 0 ||
+    value.id.length > 255 ||
+    typeof value.tag !== "string"
+  ) {
+    throw new CloudflareApiError("invalidResponse");
+  }
+  assertSafeIdentifier(value.tag);
+  return { name: value.id, tag: value.tag };
+}
+
+function parseTrigger(value: unknown, workerTag: string): BuildTrigger {
+  if (!isRecord(value) || !isRecord(value.repo_connection)) {
+    throw new CloudflareApiError("invalidResponse");
+  }
+  const repository = value.repo_connection;
+  if (
+    repository.provider_type !== "github" ||
+    typeof repository.provider_account_name !== "string" ||
+    typeof repository.repo_name !== "string" ||
+    typeof value.trigger_uuid !== "string" ||
+    typeof value.trigger_name !== "string"
+  ) {
+    throw new CloudflareApiError("invalidResponse");
+  }
+  assertSafeIdentifier(value.trigger_uuid);
+
+  const identity = parseGitHubNameWithOwner(
+    `${repository.provider_account_name}/${repository.repo_name}`,
+  );
+  if (identity === undefined) {
+    throw new CloudflareApiError("invalidResponse");
+  }
+
+  const branchIncludes = parseStringArray(value.branch_includes);
+  const branchExcludes = parseStringArray(value.branch_excludes);
+  const preview =
+    (branchIncludes.includes("*") && branchExcludes.length > 0) ||
+    (typeof value.deploy_command === "string" &&
+      value.deploy_command.includes("versions upload"));
+
+  return {
+    branchExcludes,
+    branchIncludes,
+    environment: preview ? "preview" : "production",
+    id: value.trigger_uuid,
+    name: value.trigger_name,
+    repositoryCanonicalName: identity.canonicalName,
+    rootDirectory:
+      typeof value.root_directory === "string" ? value.root_directory : "/",
+    workerTag,
+  };
+}
+
+function parseStringArray(value: unknown): string[] {
+  if (!Array.isArray(value) || value.length > 100) {
+    throw new CloudflareApiError("invalidResponse");
+  }
+
+  const strings: string[] = [];
+  for (const item of value as unknown[]) {
+    if (
+      typeof item !== "string" ||
+      item.length > 255 ||
+      item.includes("\0") ||
+      item.includes("\n") ||
+      item.includes("\r")
+    ) {
+      throw new CloudflareApiError("invalidResponse");
+    }
+    strings.push(item);
+  }
+  return strings;
 }
 
 function parseRetryAfter(value: string | null): number | undefined {
