@@ -1,0 +1,658 @@
+CLOUDFLARE BUILDS OPEN VSX EXTENSION PLAN
+==========================================
+
+Status: implementation-ready MVP plan
+Working title: Cloudflare Builds
+Repository state: empty Git repository on main with GitHub origin; no commits yet
+
+1. DESTINATION
+--------------
+
+Ship a desktop VS Code-compatible extension through Open VSX that automatically
+notices when the current workspace commit has been pushed to GitHub, correlates
+that exact commit SHA with a Cloudflare Workers Build, displays build/deployment
+progress, and notifies the user when it succeeds or fails.
+
+The first release monitors an existing Cloudflare Worker/GitHub Builds
+connection. If no connection exists, it guides the user through Cloudflare's
+one-time GitHub App authorization/dashboard setup and retries discovery. API-
+based connection and trigger creation is a later phase.
+
+2. AGREED PRODUCT DECISIONS
+---------------------------
+
+- MVP monitors an existing Cloudflare Worker/GitHub connection.
+- Track the current workspace's checked-out commit after it is pushed.
+- Authenticate Cloudflare with a user-scoped API token stored in VS Code
+  SecretStorage.
+- Local Git is the core dependency. An authenticated gh CLI is optional and is
+  used to improve GitHub repository identification.
+- Detect pushes automatically. Also provide Refresh and Watch Current Commit.
+- Use a dedicated Cloudflare Builds sidebar, status-bar indicator, and terminal-
+  outcome notifications.
+- Fetch logs on demand; automatically reveal logs when the watched build fails.
+- Auto-discover the matching account/Worker/trigger; use a picker for ambiguity.
+- Support one repository/Worker mapping per VS Code window in MVP.
+- Support desktop extension hosts only; no browser extension host in MVP.
+- Monitor only while the editor window is open; no background daemon.
+- Keep queued/running updates passive. Toast only terminal outcomes.
+- If no matching build appears within a configurable two-minute window, stop
+  polling and show recovery actions.
+- Track the matching production or preview trigger for the current branch.
+- MVP is read-only: no cancel, rebuild, trigger editing, or environment editing.
+- No product telemetry. Keep redacted local diagnostic logs only.
+- Stack: TypeScript, npm, esbuild, Vitest, and @vscode/test-electron.
+- First release includes tests, a packaged VSIX, CI, documentation, and Open VSX
+  publication.
+
+3. VERIFIED PLATFORM FACTS
+--------------------------
+
+Cloudflare
+
+- The Builds API needs a user-scoped API token. Account-scoped tokens fail.
+- Required permissions documented by Cloudflare are:
+  - Workers Builds Configuration: Edit
+  - Workers Scripts: Read (needed to discover a Worker's immutable tag)
+- The API token is not the same as a build token. MVP never asks for or stores a
+  build token because it does not create triggers or deploy manually.
+- Builds endpoints identify a Worker by immutable tag, named
+  external_script_id, not by Worker name.
+- A Worker has at most two build triggers: production and optional preview.
+- Build lifecycle status is queued, initializing, running, or stopped.
+- Terminal build outcome is success, fail, skipped, cancelled, or terminated.
+  Status and outcome must be modeled separately.
+- Build metadata contains branch, commit_hash, trigger source, repository name,
+  provider account, trigger details, and repository connection details.
+- GET /builds/builds/latest accepts at most 20 comma-separated Worker tags.
+- GET /builds/workers/{worker_tag}/builds is paginated but has no documented
+  commit-SHA filter. The client must fetch recent builds and correlate locally.
+- GET /builds/builds/{build_uuid}/logs uses cursor pagination and can report
+  truncated results; it is not documented as a streaming API.
+- Installing/authorizing the Cloudflare GitHub App is a one-time dashboard step
+  and cannot be completed only through the Builds REST API.
+
+GitHub/local environment
+
+- gh is installed and authenticated as madscientist111.
+- Its token has repo and workflow scopes.
+- gh can identify a repository reliably, but it is not needed for Cloudflare
+  authentication and must not be a hard dependency.
+- This repository now has a GitHub origin. Repository-specific Cloudflare
+  integration still requires a connected test Worker and suitable API token.
+
+4. MVP USER EXPERIENCE
+----------------------
+
+4.1 First activation
+
+1. Activate only in a trusted desktop workspace containing one Git repository.
+2. Show a Cloudflare Builds welcome view if the workspace is not configured.
+3. Offer "Connect Cloudflare".
+4. Explain the exact API-token permissions before opening Cloudflare's token
+   creation page.
+5. Prompt for the token using password input, validate it, and put it only in
+   SecretStorage.
+6. List accessible Cloudflare accounts and ask the user to choose if there is
+   more than one.
+7. Resolve GitHub repository identity:
+   a. Prefer `gh repo view --json nameWithOwner,url` when gh is available and
+      authenticated. Use `gh api repos/{owner}/{repo}` only when a numeric GitHub
+      repository ID is required.
+   b. Otherwise parse the selected Git remote's HTTPS or SSH URL.
+   c. Ask for confirmation/manual correction if identity is ambiguous.
+8. Discover the matching Worker and its production/preview triggers.
+9. Auto-select a unique match. Show a picker when multiple Workers match.
+10. Save non-secret mapping metadata locally without modifying the repository.
+11. Load recent builds and enter the ready state.
+
+Do not place account IDs, Worker tags, or tokens in tracked project files by
+default. Store the token in SecretStorage and the mapping in extension
+workspace/global state keyed by canonical repository identity.
+
+4.2 Existing connection cannot be found
+
+Show a guided empty state with these actions:
+
+- Authorize/install the Cloudflare GitHub App (open dashboard).
+- Configure Workers Builds for this repository (open dashboard).
+- Select a Worker manually.
+- Retry discovery.
+- Open troubleshooting documentation.
+
+MVP must not create repository connections, build tokens, or triggers.
+
+4.3 Automatic push-to-build loop
+
+1. Observe changes from VS Code's built-in Git extension and debounce them.
+2. Read the current branch, full local HEAD SHA, upstream branch, and upstream
+   tracking SHA using Git commands executed without a shell.
+3. Consider a commit pushed when HEAD equals the upstream tracking commit and
+   that upstream value advanced during the current editor session.
+4. Ignore duplicate tuples of repository + branch + SHA already handled.
+5. Start a two-stage watch:
+   a. Discovery stage: query recent builds until one matches repository,
+      branch, and exact normalized commit SHA.
+   b. Tracking stage: once build_uuid is known, poll that build directly until
+      status=stopped and an outcome is available.
+6. Update sidebar and status bar for queued, initializing, and running.
+7. On success, show one success notification.
+8. On fail, cancelled, terminated, or skipped, show the appropriate terminal
+   notification. For failure, retrieve and reveal logs.
+9. Stop polling after terminal state, deactivation, workspace change, manual
+   cancellation, authentication failure, or the unmatched-build timeout.
+
+Important edge behavior:
+
+- Checking out an already-pushed commit must not be misreported as a new push.
+- Force-pushes are identified by the new full SHA, not branch name alone.
+- Detached HEAD, missing upstream, non-GitHub remotes, and unauthenticated Git
+  states produce actionable passive states, not repeated error toasts.
+- If a terminal push does not update the local upstream tracking ref, the user
+  can select Watch Current Commit. Later validation may justify a low-frequency
+  `git ls-remote` fallback, but MVP must not trigger credential prompts.
+- If no build appears within 120 seconds by default, show "No matching build
+  found" and explain branch/path filters as likely causes.
+
+4.4 Manual controls
+
+Sidebar title actions:
+
+- Refresh: reload configuration, recent builds, and watched-build state. It must
+  never trigger a build.
+- Watch Current Commit: explicitly start correlation for current HEAD.
+- Configure/Reconfigure: rerun account/Worker discovery.
+
+Build item actions:
+
+- View Logs
+- Open in Cloudflare
+- Copy Commit SHA
+- Copy Build UUID
+
+4.5 Sidebar and status bar
+
+Dedicated Activity Bar container: "Cloudflare Builds"
+
+Tree sections:
+
+- Watched commit
+  - branch, short SHA, commit subject
+  - production or preview label
+  - queued/initializing/running/terminal state
+  - elapsed time and final outcome
+- Recent builds
+  - default latest 20, newest first
+  - branch, short SHA, outcome, relative time
+- Connection
+  - account, Worker, repository, trigger summary
+
+Status-bar states:
+
+- Not configured
+- Ready
+- Looking for <short-sha>
+- Queued
+- Initializing
+- Building
+- Success
+- Failed/cancelled/terminated/skipped
+- Authentication/configuration error
+
+The status-bar item opens/focuses the Cloudflare Builds view.
+
+4.6 Notifications
+
+- No toast for queued, initializing, or running.
+- One toast per watched build terminal outcome.
+- Success actions: Open Build, View Logs.
+- Failure actions: View Logs, Open Build, Troubleshoot.
+- Do not notify again for the same build_uuid/outcome pair.
+
+4.7 Logs
+
+- Fetch all available pages by following the log cursor until complete,
+  truncated, cancelled, or a defensive page/size ceiling is reached.
+- Render timestamped lines in a dedicated read-only Output channel initially.
+- Clearly indicate truncation and offer Open in Cloudflare.
+- Do not persist logs across sessions by default.
+- Redact known token values and Authorization headers from all diagnostics.
+
+5. DISCOVERY AND CORRELATION DESIGN
+-----------------------------------
+
+5.1 Repository identity
+
+Canonical identity is provider + provider account + repository, not just the
+repository's basename. Normalize common GitHub HTTPS and SSH remote forms.
+
+Resolution order:
+
+1. Authenticated gh CLI result, when available.
+2. Parsed GitHub remote owner/name.
+3. User confirmation/manual selection.
+
+Never read gh's stored token or configuration directly. Invoke gh with an
+argument array, bounded timeout, and shell disabled.
+
+5.2 Cloudflare target discovery
+
+1. List Workers scripts to obtain Worker name/tag pairs.
+2. Batch tags in groups of at most 20 through GET /builds/builds/latest.
+3. Match GitHub provider, provider account, and repository metadata.
+4. If build history cannot establish a match, list triggers per candidate Worker
+   with bounded concurrency and match trigger.repo_connection metadata.
+5. Load both triggers for a selected Worker so current production and preview
+   branches can be represented.
+6. If one Worker matches, select it automatically.
+7. If several match, show Worker/trigger/root-directory details in a picker.
+8. If none match, show guided setup and manual Worker selection.
+
+Cache discovery results for the session. Refresh invalidates the cache.
+
+5.3 Build matching
+
+A build matches the watched commit only when all available strong identifiers
+agree:
+
+- external_script_id equals configured Worker tag;
+- commit_hash equals full watched SHA (normalize case; permit a short API hash
+  only if it uniquely prefixes the full SHA);
+- branch equals current branch;
+- provider is GitHub;
+- repository/provider account agree when present.
+
+Fetch the first page of recent builds with a small per_page value (start at 20).
+Do not scan unbounded history for a just-pushed commit. Record the watch start
+time and reject clearly older builds even if metadata is malformed.
+
+5.4 Polling policy
+
+- Start discovery immediately after push detection.
+- Suggested discovery delays: 0s, 2s, 3s, 5s, then 5s with jitter.
+- Default discovery timeout: 120 seconds; expose a user setting.
+- Once build_uuid is known, poll its detail endpoint about every 5 seconds with
+  jitter until terminal.
+- Coalesce overlapping automatic and manual refreshes.
+- Respect cancellation tokens and editor deactivation.
+- On HTTP 429, honor Retry-After if present and use exponential backoff.
+- Retry transient network/5xx errors within a bounded budget.
+- Stop and request reauthentication on 401/403; do not loop.
+
+Cloudflare's public page reviewed for this plan does not state endpoint rate
+limits, so polling values must be validated against response headers and a real
+account before release.
+
+6. INTERNAL ARCHITECTURE
+------------------------
+
+Keep VS Code UI at the edge and make the core independently testable.
+
+Domain types
+
+- RepositoryIdentity
+- WorkspaceDeploymentTarget
+- WorkerRef
+- BuildTrigger (production/preview classification)
+- CommitRef
+- CloudflareBuild
+- BuildLifecycleStatus
+- BuildOutcome
+- BuildWatchState
+- BuildLogPage
+
+Modules
+
+- CloudflareBuildsClient
+  Owns HTTP authentication, response-envelope validation, pagination, retries,
+  timeouts, rate-limit handling, and endpoint DTOs.
+
+- CredentialStore
+  Owns SecretStorage access and token validation/removal.
+
+- GitWorkspaceMonitor
+  Observes the built-in Git extension, reads Git state, detects upstream
+  advancement, and emits deduplicated pushed commits.
+
+- RepositoryIdentityResolver
+  Uses optional gh, then remote parsing, without exposing subprocess details to
+  the rest of the extension.
+
+- DeploymentTargetDiscovery
+  Maps repository identity to Cloudflare account, Worker tag, and triggers.
+
+- BuildCorrelator
+  Pure logic that finds the unique build matching a CommitRef and target.
+
+- BuildWatchCoordinator
+  Owns the discovery/tracking state machine, polling schedule, cancellation,
+  deduplication, and terminal notifications.
+
+- BuildsTreeDataProvider
+  Projects watch state and recent builds into sidebar nodes.
+
+- BuildLogsPresenter
+  Retrieves cursor-paginated logs and writes the Output channel.
+
+- Diagnostics
+  Structured local logging with mandatory secret redaction and log levels.
+
+- ExtensionController
+  Composition root only: activation, command registration, disposables,
+  workspace trust, and wiring modules together.
+
+Do not let tree items call Cloudflare directly. Do not mix API DTOs with UI
+state. Map API responses into domain objects at the client boundary.
+
+7. COMMANDS AND SETTINGS
+------------------------
+
+Proposed commands
+
+- cloudflareBuilds.connect
+- cloudflareBuilds.refresh
+- cloudflareBuilds.watchCurrentCommit
+- cloudflareBuilds.selectWorker
+- cloudflareBuilds.viewLogs
+- cloudflareBuilds.openBuild
+- cloudflareBuilds.openDashboard
+- cloudflareBuilds.disconnect
+- cloudflareBuilds.showDiagnostics
+
+Proposed settings
+
+- cloudflareBuilds.enabled: boolean = true
+- cloudflareBuilds.discoveryTimeoutSeconds: number = 120
+- cloudflareBuilds.pollIntervalSeconds: number = 5
+- cloudflareBuilds.recentBuildLimit: number = 20
+- cloudflareBuilds.openLogsOnFailure: boolean = true
+- cloudflareBuilds.gitRemote: string = "origin"
+- cloudflareBuilds.logLevel: "error" | "warn" | "info" | "debug"
+
+Clamp timing/history settings to safe ranges. Never expose token or other secret
+settings through package.json configuration.
+
+8. SECURITY AND PRIVACY
+-----------------------
+
+- Require workspace trust before spawning git or gh.
+- Spawn executable + argument arrays with shell=false. Never interpolate branch,
+  remote, workspace path, or configuration into a shell command.
+- Store Cloudflare token only in SecretStorage.
+- Keep Authorization headers out of errors and logs.
+- Never log API build-token UUID/name, environment-variable values, or secret
+  log content as diagnostics.
+- Use HTTPS only and an explicit Cloudflare API origin allowlist.
+- Apply request timeouts and response-size ceilings, especially for logs.
+- Treat API payloads as untrusted and validate envelopes/required identifiers.
+- Avoid writing configuration into the repository without explicit consent.
+- Collect no product telemetry.
+- Document token revocation and provide Disconnect, which deletes the secret and
+  local mapping.
+
+9. ERROR AND EMPTY STATES
+-------------------------
+
+Every state must include a next action:
+
+- No Git repository -> Open a Git repository.
+- No GitHub remote -> Add/select a GitHub remote.
+- No upstream -> Publish branch or Watch Current Commit after pushing.
+- gh unavailable -> Continue with Git remote parsing; no warning toast.
+- Invalid/expired Cloudflare token -> Reconnect.
+- Missing permissions -> Show exact required permissions and recreate token.
+- No Cloudflare accounts -> Open account dashboard/help.
+- No matching Worker -> Setup guide, manual selection, Retry.
+- Multiple matching Workers -> Picker with Worker, trigger, branch, root path.
+- No trigger for branch -> Explain production/preview branch configuration.
+- No build within timeout -> Refresh, Open Cloudflare, Troubleshoot.
+- API unavailable/rate limited -> Passive degraded status and bounded retry.
+- Logs truncated -> Mark truncation and Open in Cloudflare.
+- Untrusted workspace -> Explain why Git monitoring is disabled.
+
+10. TEST STRATEGY
+-----------------
+
+10.1 Unit tests (Vitest)
+
+- GitHub remote normalization: HTTPS, SSH, enterprise-like invalid host cases,
+  renamed remotes, malformed URLs.
+- Build status/outcome normalization and all terminal combinations.
+- Exact/short SHA correlation and ambiguity rejection.
+- Repository/account/Worker discovery selection.
+- Push deduplication, checkout-not-push behavior, force-push behavior.
+- Poll timing, timeout, cancellation, 429 Retry-After, transient retries.
+- Cursor log pagination, truncation, cancellation, and size ceiling.
+- API envelope/error conversion and secret redaction.
+- Notification deduplication.
+
+10.2 Contract tests with recorded/sanitized fixtures
+
+Create sanitized fixtures for:
+
+- Workers script list
+- Latest builds map
+- Trigger list (production and preview)
+- Build list/detail for every lifecycle and outcome
+- Cursor-paginated/truncated logs
+- Cloudflare success=false errors, 401, 403, 404, 429, and 5xx
+
+No real token or repository metadata may enter fixtures.
+
+10.3 Integration tests
+
+- Temporary local/bare Git repositories simulate commit, push, force-push,
+  checkout, missing upstream, and terminal-origin changes.
+- Fake HTTP server drives build appearance and state transitions.
+- Verify one watched SHA yields one notification.
+- Verify Refresh does not issue POST/PUT/PATCH/DELETE requests.
+- Verify token never appears in diagnostics or thrown messages.
+
+10.4 VS Code extension-host tests
+
+Using @vscode/test-electron:
+
+- Activation/deactivation and disposable cleanup
+- Welcome/configured/error tree states
+- Command registration and Refresh behavior
+- Status-bar transitions
+- Workspace trust gating
+- SecretStorage integration through a controlled test seam
+
+10.5 Manual end-to-end acceptance
+
+Use a dedicated test Worker/repository:
+
+1. Connect Worker and GitHub through Cloudflare dashboard.
+2. Configure production main and preview non-main triggers.
+3. Install the local VSIX in VSCodium or another Open VSX-compatible editor.
+4. Connect token and verify auto-discovery.
+5. Push a successful main commit and observe detection through success.
+6. Push a successful feature branch and verify preview classification.
+7. Push a deliberately failing commit and verify failure + logs.
+8. Push an ignored path/branch and verify the two-minute no-build state.
+9. Repeat a refresh and editor restart to verify no duplicate notifications.
+10. Remove/revoke token and verify safe reauthentication behavior.
+
+11. ACCEPTANCE CRITERIA FOR MVP
+-------------------------------
+
+Functional
+
+- Given a configured trusted workspace and valid token, when current HEAD is
+  pushed to a connected GitHub branch, the extension finds the build for that
+  exact commit and shows each observed status until terminal outcome.
+- Production and preview builds are correctly labeled.
+- Success/failure appears in the sidebar/status bar and produces exactly one
+  terminal toast.
+- Failure logs are retrievable, cursor pagination works, and truncation is clear.
+- Refresh reloads state but never triggers or mutates a Cloudflare build.
+- Watch Current Commit recovers when automatic push detection misses an event.
+- Missing connection, permissions, build, upstream, or gh CLI has actionable UX.
+
+Quality
+
+- No secret appears in configuration, output, diagnostics, fixtures, or errors.
+- Unit, integration, and extension-host tests pass in CI.
+- Extension packages into a reproducible VSIX.
+- README documents permissions, GitHub App prerequisite, setup, limitations,
+  troubleshooting, privacy, and token revocation.
+- Extension installs and works in at least VSCodium plus one other compatible
+  desktop editor.
+- Open VSX listing is published and installable.
+
+12. IMPLEMENTATION MILESTONES
+-----------------------------
+
+Milestone 0 - Validation spike
+
+- Create a disposable Worker/repository connection.
+- Capture sanitized real responses for scripts, triggers, push-created builds,
+  preview builds, failures, and logs.
+- Confirm commit_hash format and dashboard build URL construction.
+- Measure delay from GitHub push to build visibility and safe polling cadence.
+- Confirm whether terminal `git push` advances the local tracking ref on target
+  platforms/editors.
+- Resolve any differences between documentation and actual API payloads.
+
+Exit: a short validation note and sanitized fixtures make the API assumptions
+above executable.
+
+Milestone 1 - Extension foundation
+
+- Initialize npm/TypeScript/esbuild project and extension manifest.
+- Add lint, typecheck, Vitest, and package scripts.
+- Implement domain types, response validation, CloudflareBuildsClient, secure
+  token store, and diagnostics.
+- Add client/fixture tests.
+
+Exit: API client can list scripts/triggers/builds, fetch one build, and fetch all
+log pages against fixtures without VS Code UI dependencies.
+
+Milestone 2 - Connection and discovery
+
+- Build welcome/connect flow and token validation.
+- Implement account selection, repository identity resolution, Worker/trigger
+  discovery, ambiguity picker, persistence, disconnect, and guided setup state.
+- Make gh optional and test fallback behavior.
+
+Exit: opening a connected repository reliably reaches Ready and displays its
+correct Worker/triggers; an unconnected repo gets actionable setup guidance.
+
+Milestone 3 - Push watcher and state machine
+
+- Implement GitWorkspaceMonitor and pushed-commit deduplication.
+- Implement two-stage BuildWatchCoordinator with polling, backoff, timeout,
+  cancellation, and terminal-state logic.
+- Add fake-Git/fake-HTTP integration tests.
+
+Exit: a simulated push automatically drives one deterministic watch from commit
+through terminal outcome.
+
+Milestone 4 - User interface
+
+- Add Activity Bar container, tree view, title/item actions, status bar,
+  notifications, Output channel, log pagination, and dashboard links.
+- Add accessible labels, icons, keyboard commands, and reduced-noise behavior.
+- Add VS Code extension-host tests.
+
+Exit: complete agreed workflow is usable without opening diagnostics or editing
+configuration files.
+
+Milestone 5 - Hardening and documentation
+
+- Run real production/preview/failure/no-build acceptance scenarios.
+- Tune polling, retries, timeouts, and response ceilings.
+- Audit shell execution, token storage, diagnostics, dependency licenses, and
+  packaged VSIX contents.
+- Write README, CHANGELOG, LICENSE, privacy statement, setup guide, limitations,
+  and troubleshooting.
+
+Exit: all MVP acceptance criteria pass and release candidate VSIX is approved.
+
+Milestone 6 - CI and Open VSX release
+
+- GitHub Actions pull-request workflow: npm ci, lint, typecheck, tests, package.
+- Tag/release workflow: rebuild VSIX from a clean checkout, attach it to a GitHub
+  release, and publish with ovsx using a protected OVSX_PAT secret.
+- Create Eclipse account, connect GitHub identity, sign the Publisher Agreement,
+  create Open VSX access token, and create the package.json publisher namespace.
+- Publish with `npx ovsx publish <vsix> -p <token>`.
+- Install from Open VSX into VSCodium and rerun smoke acceptance.
+
+Exit: public Open VSX page exists and a clean editor can install and complete
+connect -> push -> status -> outcome.
+
+13. PHASE 2: API-ASSISTED SETUP FROM SCRATCH
+--------------------------------------------
+
+After MVP monitoring is stable, add an explicit setup wizard. The one-time
+Cloudflare GitHub App authorization remains a manual browser step.
+
+Proposed flow:
+
+1. Detect that no repository connection exists.
+2. Guide user through GitHub App authorization and wait for Retry.
+3. Resolve GitHub account/repository IDs:
+   - Prefer authenticated gh API/repo metadata.
+   - Fall back to GitHub API/manual input where safe.
+4. PUT /builds/repos/connections with provider/account/repository metadata.
+5. Select existing Worker and retrieve immutable Worker tag.
+6. List/select a Cloudflare build-token UUID without exposing token material.
+7. Ask for build command, deploy command, root directory, branch/path filters,
+   and caching preference.
+8. Create production trigger.
+9. Optionally create preview trigger using `wrangler versions upload`.
+10. Optionally configure build-time variables, clearly separating them from
+    runtime Worker variables.
+11. Confirm configuration, then return to normal monitoring.
+12. Triggering a first manual build should be a separate explicit confirmation,
+    never a side effect of Refresh or setup discovery.
+
+Phase 2 must add cancel/retry safety, idempotency, and rollback/cleanup for
+partially-created connections or triggers before it ships.
+
+14. EXPLICITLY OUT OF MVP SCOPE
+-------------------------------
+
+- Creating repository connections, build tokens, or triggers
+- Editing build commands, branch/path rules, cache, or environment variables
+- Cancel/rebuild/manual-build actions
+- Multi-root/multi-repository windows
+- Background daemon or notifications after editor exit
+- Browser editor hosts
+- GitLab support
+- True live log streaming
+- Pull request annotations or GitHub Checks integration
+- Product telemetry
+
+15. REMAINING NON-BLOCKING RELEASE DECISIONS
+--------------------------------------------
+
+These do not block implementation but must be settled before packaging:
+
+- Final extension display name, package name, publisher namespace, icon, and
+  repository URL.
+- License and contribution policy.
+- Minimum VS Code engine version and exact compatible editor smoke-test matrix.
+- Whether the dedicated Activity Bar icon is preferable to placing the view in
+  Source Control after usability testing.
+- Exact Cloudflare dashboard deep links; validate against real account URLs.
+- Whether API response validation uses a small hand-written decoder or a schema
+  library after inspecting bundle-size impact.
+
+16. PRIMARY SOURCES
+-------------------
+
+- Cloudflare Workers Builds API guide:
+  https://developers.cloudflare.com/workers/ci-cd/builds/api-reference/index.md
+- Cloudflare Workers Builds REST API reference:
+  https://developers.cloudflare.com/api/resources/workers_builds/
+- Cloudflare Workers Scripts API reference:
+  https://developers.cloudflare.com/api/resources/workers/subresources/scripts/
+- Open VSX publishing guide:
+  https://github.com/eclipse-openvsx/openvsx/wiki/Publishing-Extensions
+- VS Code Extension API documentation:
+  https://code.visualstudio.com/api
+- VS Code extension publishing/package guidance:
+  https://code.visualstudio.com/api/working-with-extensions/publishing-extension
