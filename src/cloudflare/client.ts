@@ -419,8 +419,7 @@ function parseBuild(value: unknown): CloudflareBuild {
     !UUID.test(value.build_uuid) ||
     !isSafeText(metadata.branch, MAX_TEXT_LENGTH) ||
     typeof metadata.commit_hash !== "string" ||
-    !COMMIT_SHA.test(metadata.commit_hash) ||
-    !isSafeText(metadata.commit_message, MAX_COMMIT_MESSAGE_LENGTH)
+    !COMMIT_SHA.test(metadata.commit_hash)
   ) {
     throw new CloudflareApiError("invalidResponse");
   }
@@ -428,7 +427,7 @@ function parseBuild(value: unknown): CloudflareBuild {
   return {
     branch: metadata.branch,
     commitHash: metadata.commit_hash,
-    commitMessage: metadata.commit_message,
+    commitMessage: parseCommitMessage(metadata.commit_message),
     createdOn: parseRequiredTimestamp(value.created_on),
     environment: parseBuildEnvironment(value.trigger),
     ...optionalTimestamp("initializingOn", value.initializing_on),
@@ -466,7 +465,7 @@ function parseLifecycleStatus(value: unknown): BuildLifecycleStatus {
 }
 
 function optionalOutcome(value: unknown): { readonly outcome?: BuildOutcome } {
-  if (value === undefined) {
+  if (value === undefined || value === null) {
     return {};
   }
   if (
@@ -504,13 +503,26 @@ function optionalTimestamp(
   name: "initializingOn" | "runningOn" | "stoppedOn",
   value: unknown,
 ): { readonly [key in typeof name]?: string } {
-  if (value === undefined) {
+  if (value === undefined || value === null) {
     return {};
   }
   if (!isRfc3339Timestamp(value)) {
     throw new CloudflareApiError("invalidResponse");
   }
   return { [name]: value };
+}
+
+function parseCommitMessage(value: unknown): string {
+  if (value === undefined || value === null) {
+    return "";
+  }
+  if (typeof value !== "string" || value.length > MAX_COMMIT_MESSAGE_LENGTH * 4) {
+    throw new CloudflareApiError("invalidResponse");
+  }
+  return value
+    .replace(/[\p{Cc}\p{Cf}]+/gu, " ")
+    .trim()
+    .slice(0, MAX_COMMIT_MESSAGE_LENGTH);
 }
 
 function isRfc3339Timestamp(value: unknown): value is string {

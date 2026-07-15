@@ -246,16 +246,20 @@ describe("CloudflareClient", () => {
     const fetcher = vi.fn<MockFetcher>(
       respondWith(
         success({
+          build_outcome: null,
           build_trigger_metadata: {
             branch: "main",
             build_trigger_source: "api",
             commit_hash: "c".repeat(64),
-            commit_message: "Deploy the release",
+            commit_message: "Deploy the release\nwith queued metadata",
           },
           build_uuid: buildUuid,
           created_on: "2026-02-03T04:05:06+00:00",
+          initializing_on: null,
           modified_on: "2026-02-03T04:05:06+00:00",
+          running_on: null,
           status: "running",
+          stopped_on: null,
           trigger: {
             branch_excludes: [],
             branch_includes: ["main"],
@@ -278,7 +282,7 @@ describe("CloudflareClient", () => {
     ).resolves.toEqual({
       branch: "main",
       commitHash: "c".repeat(64),
-      commitMessage: "Deploy the release",
+      commitMessage: "Deploy the release with queued metadata",
       createdOn: "2026-02-03T04:05:06+00:00",
       environment: "production",
       modifiedOn: "2026-02-03T04:05:06+00:00",
