@@ -136,6 +136,16 @@ describe("ConnectionService", () => {
     );
   });
 
+  it("coalesces concurrent connection attempts", async () => {
+    const harness = createHarness();
+
+    await Promise.all([harness.service.connect(), harness.service.connect()]);
+
+    expect(harness.prompts.requestToken).toHaveBeenCalledOnce();
+    expect(harness.client.verifyToken).toHaveBeenCalledOnce();
+    expect(harness.connectionChanged).toHaveBeenCalledOnce();
+  });
+
   it("removes both secret and non-secret state on disconnect", async () => {
     const harness = createHarness();
     await harness.service.connect();

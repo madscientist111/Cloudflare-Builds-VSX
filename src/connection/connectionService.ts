@@ -36,6 +36,7 @@ export class ConnectionService {
   readonly #connections: ConnectionStore;
   readonly #credentials: CredentialStore;
   readonly #prompts: ConnectionPrompts;
+  #connectionAttempt: Promise<void> | undefined;
 
   public constructor(options: {
     readonly clientFactory: ClientFactory;
@@ -52,6 +53,33 @@ export class ConnectionService {
   }
 
   public async connect(): Promise<void> {
+    if (this.#connectionAttempt !== undefined) {
+      await this.#connectionAttempt;
+      return;
+    }
+
+    const attempt = this.#connectOnce();
+    this.#connectionAttempt = attempt;
+    try {
+      await attempt;
+    } finally {
+      if (this.#connectionAttempt === attempt) {
+        this.#connectionAttempt = undefined;
+      }
+    }
+  }
+
+  public async disconnect(): Promise<void> {
+    try {
+      await this.#credentials.deleteToken();
+      await this.#connections.clear();
+      this.#connectionChanged(undefined);
+    } catch {
+      await this.#prompts.showFailure("storage");
+    }
+  }
+
+  async #connectOnce(): Promise<void> {
     const enteredToken = await this.#prompts.requestToken();
     const token = enteredToken?.trim();
     if (token === undefined || token.length === 0) {
@@ -71,16 +99,6 @@ export class ConnectionService {
       this.#connectionChanged(account);
     } catch (error) {
       await this.#prompts.showFailure(toFailure(error));
-    }
-  }
-
-  public async disconnect(): Promise<void> {
-    try {
-      await this.#credentials.deleteToken();
-      await this.#connections.clear();
-      this.#connectionChanged(undefined);
-    } catch {
-      await this.#prompts.showFailure("storage");
     }
   }
 
