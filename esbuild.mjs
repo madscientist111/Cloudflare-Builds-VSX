@@ -3,22 +3,33 @@ import * as esbuild from "esbuild";
 const production = process.argv.includes("--production");
 const watch = process.argv.includes("--watch");
 
-const context = await esbuild.context({
+const common = {
   bundle: true,
-  entryPoints: ["src/extension.ts"],
   external: ["vscode"],
   format: "cjs",
   logLevel: "info",
-  minify: production,
-  outfile: "dist/extension.js",
   platform: "node",
   sourcemap: !production,
   target: "node20",
-});
+};
+
+const contexts = await Promise.all([
+  esbuild.context({
+    ...common,
+    entryPoints: ["src/extension.ts"],
+    minify: production,
+    outfile: "dist/extension.js",
+  }),
+  esbuild.context({
+    ...common,
+    entryPoints: ["src/test/suite/index.ts"],
+    outfile: "dist/test/suite/index.js",
+  }),
+]);
 
 if (watch) {
-  await context.watch();
+  await Promise.all(contexts.map(async (context) => context.watch()));
 } else {
-  await context.rebuild();
-  await context.dispose();
+  await Promise.all(contexts.map(async (context) => context.rebuild()));
+  await Promise.all(contexts.map(async (context) => context.dispose()));
 }

@@ -4,6 +4,7 @@
 .vscode-test/
 .vscode/
 coverage/
+dist/test/
 node_modules/
 src/
 test/
