@@ -25,7 +25,8 @@
   "main": "./dist/extension.js",
   "activationEvents": [
     "onView:cloudflareBuilds.view",
-    "onCommand:cloudflareBuilds.connect"
+    "onCommand:cloudflareBuilds.connect",
+    "onCommand:cloudflareBuilds.disconnect"
   ],
   "contributes": {
     "commands": [
@@ -33,6 +34,12 @@
         "command": "cloudflareBuilds.connect",
         "title": "Connect Cloudflare",
         "category": "Cloudflare Builds"
+      },
+      {
+        "command": "cloudflareBuilds.disconnect",
+        "title": "Disconnect",
+        "category": "Cloudflare Builds",
+        "icon": "$(debug-disconnect)"
       }
     ],
     "viewsContainers": {
@@ -57,7 +64,16 @@
         "view": "cloudflareBuilds.view",
         "contents": "Monitor the Cloudflare Workers Builds for this workspace.\n[Connect Cloudflare](command:cloudflareBuilds.connect)"
       }
-    ]
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "cloudflareBuilds.disconnect",
+          "when": "view == cloudflareBuilds.view && cloudflareBuilds.connected",
+          "group": "navigation"
+        }
+      ]
+    }
   },
   "scripts": {
     "build": "node esbuild.mjs --production",

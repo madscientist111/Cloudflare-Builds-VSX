@@ -2,7 +2,10 @@ import assert from "node:assert/strict";
 import * as vscode from "vscode";
 
 const EXTENSION_ID = "madscientist111.cloudflare-builds";
-const CONNECT_COMMAND = "cloudflareBuilds.connect";
+const CONNECTION_COMMANDS = [
+  "cloudflareBuilds.connect",
+  "cloudflareBuilds.disconnect",
+] as const;
 
 export async function run(): Promise<void> {
   const extension = vscode.extensions.getExtension(EXTENSION_ID);
@@ -12,5 +15,7 @@ export async function run(): Promise<void> {
   assert.equal(extension.isActive, true, "Extension did not activate");
 
   const commands = await vscode.commands.getCommands(true);
-  assert.ok(commands.includes(CONNECT_COMMAND), "Connect command is not registered");
+  for (const command of CONNECTION_COMMANDS) {
+    assert.ok(commands.includes(command), `${command} is not registered`);
+  }
 }
