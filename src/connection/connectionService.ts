@@ -28,7 +28,7 @@ interface CloudflareConnectionClient {
 }
 
 type ClientFactory = (token: string) => CloudflareConnectionClient;
-type ConnectionChanged = (account: CloudflareAccount | undefined) => void;
+type ConnectionChanged = (account: CloudflareAccount | undefined) => Promise<void> | void;
 
 export class ConnectionService {
   readonly #clientFactory: ClientFactory;
@@ -73,7 +73,7 @@ export class ConnectionService {
     try {
       await this.#credentials.deleteToken();
       await this.#connections.clear();
-      this.#connectionChanged(undefined);
+      await this.#connectionChanged(undefined);
     } catch {
       await this.#prompts.showFailure("storage");
     }
@@ -96,7 +96,7 @@ export class ConnectionService {
       }
       await client.checkAccountAccess(account.id);
       await this.#saveConnection(token, account);
-      this.#connectionChanged(account);
+      await this.#connectionChanged(account);
     } catch (error) {
       await this.#prompts.showFailure(toFailure(error));
     }
