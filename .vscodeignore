@@ -1,4 +1,5 @@
 .env*
+.gitignore
 .github/
 .vscode-test/
 .vscode/
