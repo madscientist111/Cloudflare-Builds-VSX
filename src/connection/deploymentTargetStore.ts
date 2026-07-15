@@ -1,4 +1,5 @@
 import type { BuildTrigger, WorkerRef } from "../cloudflare/client.js";
+import { parseGitHubNameWithOwner } from "../git/repositoryIdentity.js";
 
 const DEPLOYMENT_TARGET_KEY = "cloudflareBuilds.deploymentTarget";
 const MAX_TRIGGER_COUNT = 2;
@@ -18,11 +19,15 @@ export type DeploymentTargetTrigger = Pick<
 >;
 
 export interface WorkspaceDeploymentTarget {
+  readonly accountId: string;
+  readonly repositoryCanonicalName: string;
   readonly triggers: readonly DeploymentTargetTrigger[];
   readonly worker: WorkerRef;
 }
 
 interface PersistedDeploymentTarget {
+  readonly accountId: string;
+  readonly repositoryCanonicalName: string;
   readonly triggers: readonly DeploymentTargetTrigger[];
   readonly worker: WorkerRef;
 }
@@ -54,12 +59,21 @@ export class DeploymentTargetStore {
 }
 
 function parseDeploymentTarget(value: unknown): WorkspaceDeploymentTarget | undefined {
-  if (!isRecord(value) || !Array.isArray(value.triggers)) {
+  if (
+    !isRecord(value) ||
+    !Array.isArray(value.triggers) ||
+    !isSafeIdentifier(value.accountId, MAX_IDENTIFIER_LENGTH) ||
+    !isCanonicalRepository(value.repositoryCanonicalName)
+  ) {
     return undefined;
   }
 
   const worker = parseWorker(value.worker);
-  if (worker === undefined || value.triggers.length > MAX_TRIGGER_COUNT) {
+  if (
+    worker === undefined ||
+    value.triggers.length === 0 ||
+    value.triggers.length > MAX_TRIGGER_COUNT
+  ) {
     return undefined;
   }
 
@@ -75,6 +89,8 @@ function parseDeploymentTarget(value: unknown): WorkspaceDeploymentTarget | unde
   }
 
   return Object.freeze({
+    accountId: value.accountId,
+    repositoryCanonicalName: value.repositoryCanonicalName,
     triggers: Object.freeze(triggers),
     worker,
   });
@@ -132,6 +148,14 @@ function isSafeName(value: unknown, maximumLength: number): value is string {
   );
 }
 
+function isCanonicalRepository(value: unknown): value is string {
+  if (typeof value !== "string") {
+    return false;
+  }
+  const identity = parseGitHubNameWithOwner(value);
+  return identity !== undefined && identity.canonicalName === value;
+}
+
 function hasControlCharacter(value: string): boolean {
   for (const character of value) {
     const code = character.charCodeAt(0);
@@ -144,6 +168,8 @@ function hasControlCharacter(value: string): boolean {
 
 function toPersistedTarget(target: WorkspaceDeploymentTarget): PersistedDeploymentTarget {
   return {
+    accountId: target.accountId,
+    repositoryCanonicalName: target.repositoryCanonicalName,
     triggers: target.triggers.map((trigger) => ({
       environment: trigger.environment,
       id: trigger.id,

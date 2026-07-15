@@ -134,6 +134,17 @@ describe("DeploymentTargetDiscovery", () => {
     await expect(discovery).rejects.not.toThrow("untrusted API payload");
   });
 
+  it("rejects control characters from a custom client boundary", async () => {
+    const { client } = createClient(
+      [worker("unsafe\tworker", "worker-tag")],
+      new Map(),
+    );
+
+    await expect(
+      new DeploymentTargetDiscovery(client).discover(ACCOUNT_ID, REPOSITORY),
+    ).rejects.toMatchObject({ kind: "invalidResponse" });
+  });
+
   it("converts unexpected client failures to a safe domain error", async () => {
     const client: DiscoveryClient = {
       listTriggers: vi.fn(() => Promise.resolve([])),

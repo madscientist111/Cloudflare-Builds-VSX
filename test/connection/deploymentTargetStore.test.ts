@@ -15,6 +15,8 @@ const PREVIEW_TRIGGER = {
   name: "Preview",
 };
 const TARGET: WorkspaceDeploymentTarget = {
+  accountId: "0123456789abcdef0123456789abcdef",
+  repositoryCanonicalName: "cloudflare/workers-sdk",
   triggers: [PRODUCTION_TRIGGER, PREVIEW_TRIGGER],
   worker: { name: "api-worker", tag: "a".repeat(32) },
 };
@@ -56,23 +58,27 @@ describe("DeploymentTargetStore", () => {
     undefined,
     null,
     {},
-    { worker: TARGET.worker, triggers: "not-an-array" },
-    { worker: { name: "../worker", tag: TARGET.worker.tag }, triggers: [] },
-    { worker: { name: "api-worker", tag: "../tag" }, triggers: [] },
+    { ...TARGET, triggers: "not-an-array" },
+    { ...TARGET, accountId: "../account" },
+    { ...TARGET, repositoryCanonicalName: "Cloudflare/workers-sdk" },
+    { ...TARGET, repositoryCanonicalName: "../workers-sdk" },
+    { ...TARGET, triggers: [] },
+    { ...TARGET, worker: { name: "../worker", tag: TARGET.worker.tag } },
+    { ...TARGET, worker: { name: "api-worker", tag: "../tag" } },
     {
-      worker: TARGET.worker,
+      ...TARGET,
       triggers: [{ environment: "production", id: "trigger\nname", name: "Production" }],
     },
     {
-      worker: TARGET.worker,
+      ...TARGET,
       triggers: [{ environment: "preview", id: "preview-trigger", name: "../Preview" }],
     },
     {
-      worker: TARGET.worker,
+      ...TARGET,
       triggers: [{ environment: "preview", id: "preview-trigger", name: "\0" }],
     },
     {
-      worker: TARGET.worker,
+      ...TARGET,
       triggers: [
         {
           environment: "production",

@@ -6,6 +6,7 @@ import {
 } from "../git/repositoryIdentity.js";
 
 const ACCOUNT_ID = /^[A-Za-z0-9_-]{1,64}$/u;
+const CONTROL_CHARACTER = /[\p{Cc}\p{Cf}]/u;
 const MAX_TRIGGER_CONCURRENCY = 4;
 
 export interface CloudflareDiscoveryClient {
@@ -170,9 +171,7 @@ function isSafeString(value: unknown): value is string {
     typeof value === "string" &&
     value.trim().length > 0 &&
     value.length <= 255 &&
-    !value.includes("\0") &&
-    !value.includes("\n") &&
-    !value.includes("\r")
+    !CONTROL_CHARACTER.test(value)
   );
 }
 
