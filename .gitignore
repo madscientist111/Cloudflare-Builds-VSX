@@ -1,0 +1,26 @@
+# Dependencies and generated output
+node_modules/
+dist/
+coverage/
+*.vsix
+.vscode-test/
+
+# Local environment and credentials
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+*.p12
+*.pfx
+*.jks
+*.keystore
+
+# Local editor and OS state
+.vscode/settings.json
+.idea/
+.DS_Store
+
+# Logs
+*.log
+npm-debug.log*
