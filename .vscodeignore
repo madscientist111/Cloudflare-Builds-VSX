@@ -16,6 +16,5 @@ test/
 *.vsix
 eslint.config.mjs
 esbuild.mjs
-plan.txt
 scripts/
 tsconfig.json

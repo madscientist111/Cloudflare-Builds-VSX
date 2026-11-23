@@ -4,7 +4,7 @@
   "description": "Monitor Cloudflare Workers Builds from your editor.",
   "version": "0.0.1",
   "publisher": "madscientist111",
-  "license": "UNLICENSED",
+  "license": "Apache-2.0",
   "private": true,
   "repository": {
     "type": "git",
